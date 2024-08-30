@@ -2,28 +2,26 @@ import numpy as np
 import pandas as pd
 from seeds import known_seeds
 from utils import save_solution
-from evaluation import get_actual_demand
+from evaluation import get_actual_demand, evaluation_function
 
 def allocate_initial_servers(datacenters, servers):
     solution = []
     server_id_counter = 0
 
     for datacenter in datacenters['datacenter_id']:
-        # Focus on initial deployment based on the slots and energy cost
         available_servers = servers[servers['release_time'].apply(lambda rt: 1 in eval(rt))]
 
         for index, server in available_servers.iterrows():
-            if server['server_type'] == 'CPU':
-                server_count = datacenters.loc[datacenters['datacenter_id'] == datacenter, 'slots_capacity'].values[0] // server['slots_size']
-                for _ in range(min(20, server_count)):  # Start with a balanced number
-                    solution.append({
-                        "time_step": 1,
-                        "datacenter_id": datacenter,
-                        "server_generation": server['server_generation'],
-                        "server_id": f"server_{server_id_counter}",
-                        "action": "buy"
-                    })
-                    server_id_counter += 1
+            server_count = datacenters.loc[datacenters['datacenter_id'] == datacenter, 'slots_capacity'].values[0] // server['slots_size']
+            for _ in range(min(20, server_count)):
+                solution.append({
+                    "time_step": 1,
+                    "datacenter_id": datacenter,
+                    "server_generation": server['server_generation'],
+                    "server_id": f"server_{server_id_counter}",
+                    "action": "buy"
+                })
+                server_id_counter += 1
 
     return solution
 
@@ -44,7 +42,7 @@ def manage_fleet_over_time(demand, datacenters, servers, selling_prices, seed):
                     if not available_servers.empty:
                         available_server = available_servers.iloc[0]
 
-                        # Check if we should move, buy, or hold
+                        # Strategy to decide on action: move servers if already bought
                         if np.random.rand() > 0.5:
                             solution.append({
                                 "time_step": ts,
@@ -60,10 +58,10 @@ def manage_fleet_over_time(demand, datacenters, servers, selling_prices, seed):
                                 "datacenter_id": datacenter,
                                 "server_generation": available_server['server_generation'],
                                 "server_id": f"server_{server_id_counter - 1}",
-                                "action": "hold"
+                                "action": "move"  # Move to respond to changing demand
                             })
 
-        # Dismiss servers as they near end of life
+        # Dismiss servers as they near end of life to optimize lifespan
         if ts % 10 == 0:
             for datacenter in datacenters['datacenter_id']:
                 old_servers = [s for s in solution if s['action'] == 'buy' and s['datacenter_id'] == datacenter and ts - s['time_step'] > 80]
