@@ -6,31 +6,33 @@ from evaluation import get_actual_demand, evaluation_function
 
 def allocate_initial_servers(datacenters, servers):
     solution = []
+    active_servers = {}
     server_id_counter = 0
 
-    for datacenter in datacenters['datacenter_id']:
-        available_servers = servers[servers['release_time'].apply(lambda rt: 1 in eval(rt))]
+    available_servers = servers[servers['release_time'].apply(lambda rt: 1 in eval(rt))]
 
+    for datacenter in datacenters['datacenter_id']:
         for index, server in available_servers.iterrows():
-            server_count = datacenters.loc[datacenters['datacenter_id'] == datacenter, 'slots_capacity'].values[0] // server['slots_size']
-            for _ in range(min(20, server_count)):
+            max_servers = datacenters.loc[datacenters['datacenter_id'] == datacenter, 'slots_capacity'].values[0] // server['slots_size']
+            for _ in range(min(20, max_servers)):
+                server_id = f"{server['server_generation']}_{server_id_counter}"
                 solution.append({
                     "time_step": 1,
                     "datacenter_id": datacenter,
                     "server_generation": server['server_generation'],
-                    "server_id": f"server_{server_id_counter}",
+                    "server_id": server_id,
                     "action": "buy"
                 })
+                active_servers[server_id] = datacenter
                 server_id_counter += 1
 
-    return solution
+    return solution, active_servers, server_id_counter
 
-def manage_fleet_over_time(demand, datacenters, servers, selling_prices, seed):
+def manage_fleet_over_time(demand, datacenters, servers, selling_prices, seed, active_servers, server_id_counter):
     solution = []
     np.random.seed(seed)
-    server_id_counter = len(solution)
 
-    for ts in range(1, 169):
+    for ts in range(2, 169):  # Start from timestep 2
         current_demand = demand[demand['time_step'] == ts]
 
         for index, row in current_demand.iterrows():
@@ -41,38 +43,43 @@ def manage_fleet_over_time(demand, datacenters, servers, selling_prices, seed):
 
                     if not available_servers.empty:
                         available_server = available_servers.iloc[0]
+                        server_id = f"{available_server['server_generation']}_{server_id_counter}"
 
-                        # Strategy to decide on action: move servers if already bought
                         if np.random.rand() > 0.5:
                             solution.append({
                                 "time_step": ts,
                                 "datacenter_id": datacenter,
                                 "server_generation": available_server['server_generation'],
-                                "server_id": f"server_{server_id_counter}",
+                                "server_id": server_id,
                                 "action": "buy"
                             })
+                            active_servers[server_id] = datacenter
                             server_id_counter += 1
-                        else:
-                            solution.append({
-                                "time_step": ts,
-                                "datacenter_id": datacenter,
-                                "server_generation": available_server['server_generation'],
-                                "server_id": f"server_{server_id_counter - 1}",
-                                "action": "move"  # Move to respond to changing demand
-                            })
+                        elif active_servers:
+                            # Move an existing server
+                            server_to_move = np.random.choice(list(active_servers.keys()))
+                            if active_servers[server_to_move] != datacenter:
+                                solution.append({
+                                    "time_step": ts,
+                                    "datacenter_id": datacenter,
+                                    "server_generation": server_to_move.split('_')[0],
+                                    "server_id": server_to_move,
+                                    "action": "move"
+                                })
+                                active_servers[server_to_move] = datacenter
 
-        # Dismiss servers as they near end of life to optimize lifespan
+        # Periodically dismiss old servers
         if ts % 10 == 0:
-            for datacenter in datacenters['datacenter_id']:
-                old_servers = [s for s in solution if s['action'] == 'buy' and s['datacenter_id'] == datacenter and ts - s['time_step'] > 80]
-                for server in old_servers:
-                    solution.append({
-                        "time_step": ts,
-                        "datacenter_id": datacenter,
-                        "server_generation": server['server_generation'],
-                        "server_id": server['server_id'],
-                        "action": "dismiss"
-                    })
+            for server_id, dc_id in list(active_servers.items()):
+                server_generation = server_id.split('_')[0]
+                solution.append({
+                    "time_step": ts,
+                    "datacenter_id": dc_id,
+                    "server_generation": server_generation,
+                    "server_id": server_id,
+                    "action": "dismiss"
+                })
+                del active_servers[server_id]
 
     return solution
 
@@ -80,10 +87,9 @@ def generate_solutions(seeds, demand, datacenters, servers, selling_prices):
     for seed in seeds:
         np.random.seed(seed)
         actual_demand = get_actual_demand(demand)
-        initial_solution = allocate_initial_servers(datacenters, servers)
-        full_solution = manage_fleet_over_time(actual_demand, datacenters, servers, selling_prices, seed)
+        initial_solution, active_servers, server_id_counter = allocate_initial_servers(datacenters, servers)
+        full_solution = manage_fleet_over_time(actual_demand, datacenters, servers, selling_prices, seed, active_servers, server_id_counter)
 
-        # Combine the initial and time-step solutions
         final_solution = initial_solution + full_solution
         save_solution(final_solution, f'./output/{seed}.json')
 
